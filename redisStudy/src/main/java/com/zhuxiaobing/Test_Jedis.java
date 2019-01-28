@@ -2,78 +2,108 @@ package com.zhuxiaobing;
 
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
-import redis.clients.jedis.JedisPoolConfig;
+import redis.clients.jedis.Transaction;
 
-import java.util.Date;
+import java.util.*;
 
 public class Test_Jedis {
 
-    private static final String IP = "192.168.241.129";
-    private static final Integer PORT = 6379;
-
     public static void main(String[] args) {
-        test02();
+        JedisPool jedisPool = JedisPoolUtil.getJedisPoolInstance();
+        Jedis jedis = null;
+        try {
+            jedis = jedisPool.getResource();
+            // 测试redis 事物
+            testTransaction(jedis);
+            // 测试redis 五种数据类型
+            testCommon(jedis);
+        } catch (Exception e) {
+            e.printStackTrace();
+        } finally {
+            JedisPoolUtil.release(jedisPool, jedis);
+        }
     }
 
-    /**
-     * 最普通的方式，jedis是非线程安全的。
-     */
-    private static void test01() {
-        Jedis jedis = new Jedis(Test_Jedis.IP, Test_Jedis.PORT);
-        jedis.set("key001", "hello Jedis");
-        System.out.println(jedis.get("key001"));
-        jedis.expire("key001", 5);
-        jedis.close();
+    public static void testTransaction(Jedis jedis) {
+        int balance;
+        int debt;
+        int amt = 10;
+        jedis.set("balance", "100");
+        jedis.set("debt", "10");
+        jedis.watch("balance");
+        balance = Integer.parseInt(jedis.get("balance"));
+        if (balance < amt) {
+            jedis.unwatch();
+            return;
+        } else {
+            Transaction transaction = jedis.multi();
+            transaction.decrBy("balance", amt);
+            transaction.incrBy("debt", amt);
+            transaction.exec();
+            balance = Integer.parseInt(jedis.get("balance"));
+            debt = Integer.parseInt(jedis.get("debt"));
+            System.out.println(balance);
+            System.out.println(debt);
+        }
     }
 
-    /**
-     * 采用jedis线程池（JedisPool）， JedisPool是一个线程安全的线程池。
-     */
-    private static void test02() {
-
-        JedisPoolConfig jedisPoolConfig = new JedisPoolConfig();
-        jedisPoolConfig.setMaxTotal(5);
-        jedisPoolConfig.setMaxWaitMillis(2000000);
-
-        jedisPoolConfig.setTestWhileIdle(true); // 接池在空闲的时候校验连接池中链接的有效性。
-        jedisPoolConfig.setTestOnBorrow(true);  // 每次从连接池中借一个链接的时候，要校验链接的可用性。
-        jedisPoolConfig.setTestOnCreate(true);  // 每次创建一个链接放入到连接池的时候，需要校验该链接的有效性。
-
-        final JedisPool jedisPool = new JedisPool(jedisPoolConfig, Test_Jedis.IP, Test_Jedis.PORT);
-
-        Thread[] ts = new Thread[10];
-        for (int i = 0; i < 10; i++) { // 开启10个线程。
-            Thread t = new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    Jedis jedis = null;
-                    try {
-                        jedis = jedisPool.getResource();
-                        Long time = new Date().getTime();
-                        String key = Thread.currentThread().getName() + "_" + time;
-                        jedis.set(key, time.toString());
-                        jedis.expire(key, 20);
-                        System.out.println(key);
-                        Thread.sleep(1000);
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                    } finally {
-                        if (jedis != null) {
-                            jedis.close();
-                        }
-                    }
-                }
-            });
-            t.start();
-            ts[i] = t;
+    public static void testCommon(Jedis jedis) {
+        System.out.println("****************key*****************");
+        Set<String> keys = jedis.keys("*");
+        for (Iterator iterator = keys.iterator(); iterator.hasNext(); ) {
+            String key = (String) iterator.next();
+            System.out.println(key);
         }
-        for (Thread t : ts) {
-            try {
-                t.join();
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
+        System.out.println(jedis.exists("k2"));
+        System.out.println(jedis.ttl("k9"));
+
+        System.out.println("****************String*****************");
+        jedis.set("k10", "v10");
+        jedis.mset("ak1", "av1", "ak2", "av2");
+        System.out.println(jedis.mget("ak1", "ak2"));
+
+        System.out.println("****************list*****************");
+        jedis.lpush("mylist", "a", "b", "c");
+        List<String> list = jedis.lrange("mylist", 0, -1);
+        for (String element : list) {
+            System.out.println(element);
         }
-        jedisPool.close();
+
+        System.out.println("****************hash*****************");
+        jedis.hset("hash1", "username", "zhuxiaobing");
+        System.out.println(jedis.hget("hash1", "username"));
+        Map<String, String> map = new HashMap<String, String>();
+        map.put("telphone", "13811814763");
+        map.put("address", "atguigu");
+        map.put("email", "abc@163.com");
+        jedis.hmset("hash2", map);
+        List<String> result = jedis.hmget("hash2", "telphone", "email");
+        for (String element : result) {
+            System.out.println(element);
+        }
+
+        System.out.println("****************set*****************");
+        jedis.sadd("orders", "jd001");
+        jedis.sadd("orders", "jd002");
+        jedis.sadd("orders", "jd003");
+        Set<String> set1 = jedis.smembers("orders");
+        for (Iterator iterator = set1.iterator(); iterator.hasNext(); ) {
+            String string = (String) iterator.next();
+            System.out.println(string);
+        }
+        jedis.srem("orders", "jd002");
+        System.out.println(jedis.smembers("orders").size());
+
+        System.out.println("****************zset*****************");
+        jedis.zadd("zset01", 60d, "v1");
+        jedis.zadd("zset01", 70d, "v2");
+        jedis.zadd("zset01", 80d, "v3");
+        jedis.zadd("zset01", 90d, "v4");
+
+        Set<String> s1 = jedis.zrange("zset01", 0, -1);
+        for (Iterator iterator = s1.iterator(); iterator.hasNext(); ) {
+            String string = (String) iterator.next();
+            System.out.println(string);
+        }
     }
 }
